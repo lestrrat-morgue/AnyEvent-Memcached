@@ -33,6 +33,17 @@ has handles => (
     writer => 'set_handles',
 );
 
+has hashing_algorithm_class => (
+    is => 'ro',
+    isa => 'Str',
+    required => 1,
+    default => 'Modula',
+    trigger => sub {
+        my $self = shift;
+        $self->clear_protocol;
+    }
+);
+
 has hashing_algorithm => (
     is => 'ro',
     isa => 'AnyEvent::Memcached::Hash',
@@ -55,7 +66,11 @@ has protocol_class => (
     is => 'rw',
     isa => 'Str',
     required => 1,
-    default => 'Text'
+    default => 'Text',
+    trigger => sub {
+        my $self = shift;
+        $self->clear_protocol;
+    }
 );
 
 has queue => (
@@ -71,9 +86,17 @@ has servers => (
 );
 
 sub _build_hashing_algorithm {
-    require AnyEvent::Memcached::Hash::Modula;
-    AnyEvent::Memcached::Hash::Modula->new();
+    my $self = shift;
+    my $class = $self->hashing_algorithm_class;
+    if ($class !~ s/^\+//) {
+        $class = "AnyEvent::Memcached::Hash::$class";
+    }
+    if (! Any::Moose::is_class_loaded($class)) {
+        Any::Moose::load_class($class);
+    }
+    $class->new();
 }
+
 sub _build_protocol {
     my $self = shift;
     my $class = $self->protocol_class;
