@@ -187,38 +187,43 @@ sub add_to_queue {
     }
 }
 
+sub connect {
+    my $self = shift;
+    $self->is_connecting(1);
+    my %handles;
+    my $cv = AE::cv {
+        $self->set_handles( \%handles );
+        $self->is_connecting(0);
+        $self->connected(1);
+        $self->drain_queue();
+    };
+    foreach my $server ( $self->all_servers ) {
+        $cv->begin;
+        my ($host, $port) = split(/:/, $server);
+        $port ||= 11211;
+        my $guard; $guard = tcp_connect $host, $port, sub {
+            my ($fh, $host, $port) = @_;
+
+            undef $guard;
+            my $h; $h = AnyEvent::Handle->new(
+                fh => $fh,
+                on_error => sub { warn "error"; undef $h },
+                on_eof   => sub { warn "eof"; undef $h },
+            );
+
+            $self->protocol->prepare_handle( $fh );
+            $handles{ $server } = $h;
+            $cv->end;
+        };
+    }
+}
+
 sub drain_queue {
     my $self = shift;
 
     if( ! $self->connected ) {
         return if $self->is_connecting;
-        $self->is_connecting(1);
-        my %handles;
-        my $cv = AE::cv {
-            $self->set_handles( \%handles );
-            $self->is_connecting(0);
-            $self->connected(1);
-            $self->drain_queue();
-        };
-        foreach my $server ( $self->all_servers ) {
-            $cv->begin;
-            my ($host, $port) = split(/:/, $server);
-            $port ||= 11211;
-            my $guard; $guard = tcp_connect $host, $port, sub {
-                my ($fh, $host, $port) = @_;
-
-                undef $guard;
-                my $h; $h = AnyEvent::Handle->new(
-                    fh => $fh,
-                    on_error => sub { warn "error"; undef $h },
-                    on_eof   => sub { warn "eof"; undef $h },
-                );
-
-                $self->protocol->prepare_handle( $fh );
-                $handles{ $server } = $h;
-                $cv->end;
-            };
-        }
+        $self->connect;
         return;
     }
 
