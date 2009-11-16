@@ -22,6 +22,11 @@ has connected => (
     default => 0,
 );
 
+has drain_watcher => (
+    is => 'rw',
+    clearer => 'clear_drain_watcher',
+);
+
 has handles => (
     is => 'ro',
     isa => 'HashRef',
@@ -150,10 +155,13 @@ sub stats {
 sub add_to_queue {
     my ($self, $cb, $args) = @_;
     $self->push_queue( [ $cb, $args ] );
-    my $w; $w = AE::timer 0, 0, sub {
-        undef $w;
-        $self->drain_queue
-    };
+    if (! $self->drain_watcher) {
+        my $w; $w = AE::timer 0, 0, sub {
+            $self->clear_drain_watcher();
+            $self->drain_queue
+        };
+        $self->drain_watcher($w);
+    }
 }
 
 sub drain_queue {
