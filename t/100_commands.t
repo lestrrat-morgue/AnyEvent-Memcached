@@ -3,10 +3,10 @@ use lib "t/lib";
 use AnyEvent::Memcached::Test;
 
 my $memd = test_client() or exit;
-plan tests => 220;
+plan tests => 40;
 
 # count should be >= 4.
-use constant count => 100;
+use constant count => 10;
 
 my $cv = AE::cv;
 $memd->meta->add_before_method_modifier($_ => sub { $cv->begin })
@@ -16,15 +16,15 @@ my $key = 'commands';
 my @keys = map { "commands-$_" } (1..count);
 
 $memd->delete($key, sub { $cv->end });
-ok($memd->add($key, 'v1', sub { $cv->end }), 'Add');
+$memd->add($key, 'v1', sub { ok($_[0], 'Add'); $cv->end });
 
 $memd->get($key, sub { is( $_[0], 'v1', 'Fetch'); $cv->end } );
 
-ok($memd->set($key, 'v2', sub { $cv->end }), 'Set');
+$memd->set($key, 'v2', sub { ok($_[0], 'Set'); $cv->end });
 
 $memd->get($key, sub { is( $_[0], 'v2', 'Fetch'); $cv->end });
 
-ok($memd->replace($key, 'v3', sub { $cv->end }), 'Replace');
+$memd->replace($key, 'v3', sub { ok($_[0], 'Replace'); $cv->end });
 
 $memd->get($key, sub { is( $_[0], 'v3', 'Fetch'); $cv->end });
 $memd->replace($key, 0, sub { ok( $_[0], 'replace with numeric'); $cv->end });
