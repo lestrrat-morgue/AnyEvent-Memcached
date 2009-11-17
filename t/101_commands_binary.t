@@ -3,7 +3,7 @@ use lib "t/lib";
 use AnyEvent::Memcached::Test;
 
 my $memd = test_client() or exit;
-plan tests => 220;
+# plan tests => 220;
 
 # count should be >= 4.
 use constant count => 100;
@@ -16,8 +16,8 @@ $memd->meta->add_before_method_modifier($_ => sub { $cv->begin })
 my $key = 'commands';
 my @keys = map { "commands-$_" } (1..count);
 
-#$memd->delete($key, sub { $cv->end });
-#ok($memd->add($key, 'v1', sub { $cv->end }), 'Add');
+$memd->delete($key, sub { $cv->end });
+$memd->add($key, 'v1', sub { is($_[0], 0, 'Add'); $cv->end });
 
 $memd->get($key, sub { is( $_[0], 'v1', 'Fetch'); $cv->end } );
 
