@@ -312,6 +312,50 @@ sub _build_delete_cb {
     }
 }
 
+my $default_header_handler = sub {
+    my ($handle, $cv, $user_cb, $header, $body_handler) = @_;
+    my ($magic, $opcode, $key_length, $extra_length, $status, $data_type, $total_body_length, $opaque, $cas) = _decode_header($header);
+
+    if ($magic != RES_MAGIC) {
+        $user_cb->(undef, "Response magic is not of expected value");
+        $cv->end if $cv;
+        return;
+    } 
+
+    if ($status != 0) {
+        $user_cb->(undef, _status_str($status));
+        $cv->end if $cv;
+        return;
+    }
+    if ($total_body_length) {
+        $cv->begin;
+        $handle->push_read(chunk => $total_body_length, sub {
+            my ($handle, $body) = @_;
+            # flags and such should be here
+            my $extra = $extra_length ?
+                substr($body, 0, $extra_length, '') : undef;
+
+            my $key = $key_length ? 
+                substr($body, 0, $key_length, '') : undef;
+
+            $body = unpack('a*', $body);
+            $cv->end;
+            $body_handler->($handle, $extra, $key, $body, $user_cb);
+        });
+    }
+};
+
+my $default_reader = sub {
+    my ($handle, $cv, $user_cb, $header_handler, $body_handler) = @_;
+
+    $header_handler ||= $default_header_handler;
+
+    $handle->push_read(chunk => HEADER_SIZE, sub {
+        my ($handle, $header) = @_;
+        $header_handler->($handle, $cv, $user_cb, $header, $body_handler);
+    });
+};
+
 sub _build_get_multi_cb {
     return sub {
         my ($self, $memcached, $keys, $cb, $cb_caller) = @_;
@@ -340,37 +384,11 @@ sub _build_get_multi_cb {
             foreach my $data ( map { _encode_message(MEMD_GETK, $_) } @keys ) {
                 $cv->begin;
                 $handle->push_write($data);
-                $handle->push_read(chunk => HEADER_SIZE, sub {
-                    my ($handle, $header) = @_;
-
-                    my ($magic, $opcode, $key_length, $extra_length, $status, $data_type, $total_body_length, $opaque, $cas) = _decode_header($header);
-
-                    if ($magic != RES_MAGIC) {
-                        $cb->(undef, "Response magic is not of expected value");
-                        $cv->end;
-                        return;
-                    } 
-
-                    if ($status != 0) {
-                        $cb->(undef, _status_str($status));
-                        $cv->end;
-                        return;
+                $default_reader->( $handle, $cv, $cb, undef, sub {
+                    my ($handle, $extra, $key, $value) = @_;
+                    if ($key && $value) {
+                        $result{ $key } = $value || undef;
                     }
-
-                    if ($total_body_length) {
-                        $cv->begin;
-                        $handle->push_read(chunk => $total_body_length, sub {
-                            my ($handle, $body) = @_;
-
-                            $body = unpack('a*', $body);
-                            my $extra = $extra_length ? substr($body, 0, $extra_length, '') : undef;
-                            my $key = $key_length ? substr($body, 0, $key_length, '') : undef;
-                            $result{ $key } = $body || undef;
-
-                            $cv->end;
-                        });
-                    }
-
                     $cv->end;
                 });
 
