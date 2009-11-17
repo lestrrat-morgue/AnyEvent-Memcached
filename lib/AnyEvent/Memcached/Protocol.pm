@@ -43,6 +43,13 @@ has memcached => (
     required => 1,
 );
 
+has get_cb => (
+    init_arg => undef,
+    is => 'ro',
+    isa => 'CodeRef',
+    lazy_build => 1,
+);
+
 has get_multi_cb => (
     init_arg => undef,
     is => 'ro',
@@ -75,12 +82,13 @@ sub _build_add_cb {}
 sub _build_decr_cb {}
 sub _build_delete_cb {}
 sub _build_incr_cb {}
+sub _build_get_cb {}
 sub _build_get_multi_cb {}
 sub _build_replace_cb {}
 sub _build_set_cb {}
 sub _build_stats_cb {}
 
-sub prepare_handle { }
+sub prepare_handle {}
 
 sub get_handle_for {
     my ($self, $key) = @_;

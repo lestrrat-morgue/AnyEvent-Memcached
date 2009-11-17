@@ -4,6 +4,7 @@ use namespace::clean -except => qw(meta);
 
 extends 'AnyEvent::Memcached::Protocol';
 
+use constant HEADER_SIZE => 24;
 use constant HAS_64BIT => do {
     no strict;
     require Config;
@@ -84,9 +85,30 @@ use constant HAS_64BIT => do {
 #   Total body length   Length in bytes of extra + key + value.
 #   Opaque              Will be copied back to you in the response.
 #   CAS                 Data version check.
+
+# Constants
 use constant +{
+#    Magic numbers
     REQ_MAGIC       => 0x80,
     RES_MAGIC       => 0x81,
+
+#    Status Codes
+#    0x0000  No error
+#    0x0001  Key not found
+#    0x0002  Key exists
+#    0x0003  Value too large
+#    0x0004  Invalid arguments
+#    0x0005  Item not stored
+#    0x0006  Incr/Decr on non-numeric value.
+    ST_SUCCESS      => 0x0000,
+    ST_NOT_FOUND    => 0x0001,
+    ST_EXISTS       => 0x0002,
+    ST_TOO_LARGE    => 0x0003,
+    ST_INVALID      => 0x0004,
+    ST_NOT_STORED   => 0x0005,
+    ST_NON_NUMERIC  => 0x0006,
+
+#    Opcodes
     MEMD_GET        => 0x00,
     MEMD_SET        => 0x01,
     MEMD_ADD        => 0x02,
@@ -119,11 +141,13 @@ use constant +{
 
 my $OPAQUE;
 BEGIN {
-    $OPAQUE = 0;
+    $OPAQUE = 0xffffffff;
 }
 
 sub _encode_message {
     my ($opcode, $key, $extras, $data_type, $reserved, $cas, $body) = @_;
+
+    use bytes;
 
     my $key_length = defined $key ? bytes::length($key) : 0;
     # first 4 bytes (long)
@@ -143,9 +167,11 @@ sub _encode_message {
     my $i3 = $body_length + $key_length + $extra_length;
 
     # this is the opaque value, which will be returned with the response
-    my $i4 = $OPAQUE + 1;
+    my $i4 = $OPAQUE;
     if ($OPAQUE == 0xffffffff) {
         $OPAQUE = 0;
+    } else {
+        $OPAQUE++;
     }
 
     # CAS is 64 bit, which is troublesome on 32 bit architectures.
@@ -163,6 +189,9 @@ sub _encode_message {
     }
 
     my $message = pack( 'N6', $i1, $i2, $i3, $i4, $i5, $i6 );
+    if (bytes::length($message) > HEADER_SIZE) {
+        confess "header size assertion failed";
+    }
 
     if ($extra_length) {
         $message .= $extras;
@@ -185,10 +214,11 @@ sub _decode_header {
     my ($i1, $i2, $i3, $i4, $i5, $i6) = unpack('N6', $header);
     my $magic = $i1 >> 24;
     my $opcode = ($i1 & 0x00ff0000) >> 16;
-    my $status = $i1 & 0x0000ffff;
-    my $extra_length = ($i2 & 0xff000000) >> 16;
-    my $data_type = undef; # not used
-    my $reserved  = undef; # not used
+    my $key_length = $i1 & 0x0000ffff;
+warn "key length => $key_length";
+    my $extra_length = ($i2 & 0xff000000) >> 24;
+    my $data_type = ($i2 & 0x00ff0000) >> 8;
+    my $status = $i2 & 0x0000ffff;
     my $total_body_length = $i3;
     my $opaque = $i4;
 
@@ -201,14 +231,28 @@ sub _decode_header {
         $cas = $i6;
     }
 
-    return ($magic, $opcode, $status, $extra_length, $data_type, $reserved, $total_body_length, $opaque, $cas);
+    return ($magic, $opcode, $key_length, $extra_length, $status, $data_type, $total_body_length, $opaque, $cas);
+}
+
+sub _status_str {
+    my $status = shift;
+    my %strings = (
+        ST_SUCCESS() => "Success",
+        ST_NOT_FOUND() => "Not found",
+        ST_EXISTS() => "Exists",
+        ST_TOO_LARGE() => "Too Large",
+        ST_INVALID() => "Invalid Arguments",
+        ST_NOT_STORED() => "Not Stored",
+        ST_NON_NUMERIC() => "Incr/Decr on non-numeric variables"
+    );
+    return $strings{$status};
 }
 
 sub _build_get_multi_cb {
     my $self = shift;
 
     return sub {
-        my ($keys, $cb) = @_;
+        my ($keys, $cb, $cb_caller) = @_;
 
         # organize the keys by handle
         my %handle2keys;
@@ -223,42 +267,52 @@ sub _build_get_multi_cb {
             }
         }
 
+        my %result;
+        my $cv = AE::cv { 
+            # This trigger should be called when ALL keys have responded
+            $cb_caller->($cb, \%result);
+            $self->memcached->drain_queue;
+        };
         foreach my $list (values %handle2keys) {
             my ($handle, @keys) = @$list;
             foreach my $data ( map { _encode_message(MEMD_GETK, $_) } @keys ) {
+                $cv->begin;
                 $handle->push_write($data);
-                $handle->push_read(chunk => 16, sub {
+                $handle->push_read(chunk => HEADER_SIZE, sub {
                     my ($handle, $header) = @_;
 
-                    my ($magic, $opcode, $status, $extra_length, $data_type, $reserved, $total_body_length, $opaque, $cas) = _decode_header($header);
+                    my ($magic, $opcode, $key_length, $extra_length, $status, $data_type, $total_body_length, $opaque, $cas) = _decode_header($header);
 
                     if ($magic != RES_MAGIC) {
                         $cb->(undef, "Response magic is not of expected value");
+                        $cv->end;
                         return;
                     } 
 
                     if ($status != 0) {
-warn "Error status: $status";
                         $cb->(undef, "Error status");
+                        $cv->end;
                         return;
                     }
 
-                    if ($extra_length) {
-                        $handle->push_read(chunk => $extra_length, sub {
-                            warn "extra = $_[1]";
-                        });
-                    }
-
                     if ($total_body_length) {
+                        $cv->begin;
                         $handle->push_read(chunk => $total_body_length, sub {
-                            warn "body = $_[1]";
+                            my ($handle, $body) = @_;
+
+                            $body = unpack('a*', $body);
+                            my $extra = $extra_length ? substr($body, 0, $extra_length, '') : undef;
+                            my $key = $key_length ? substr($body, 0, $key_length, '') : undef;
+                            $result{ $key } = $body || undef;
+
+                            $cv->end;
                         });
                     }
 
-#                    $cb->( $magic );
+                    $cv->end;
                 });
+                $handle->push_write( _noop() );
             }
-            $handle->push_write( _noop() );
         }
     };
 }
