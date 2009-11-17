@@ -136,6 +136,17 @@ sub prepare_value {
     return ($value, $len, $flags, $exptime);
 }
 
+sub decode_value {
+    my ($self, $flags, $data) = @_;
+    if ($flags & F_COMPRESS() && HAVE_ZLIB()) {
+        $data = Compress::Zlib::memGunzip($data);
+    }
+    if ($flags & F_STORABLE()) {
+        $data = Storable::thaw($data);
+    }
+    return $data;
+}
+
 __PACKAGE__->meta->make_immutable();
 
 1;

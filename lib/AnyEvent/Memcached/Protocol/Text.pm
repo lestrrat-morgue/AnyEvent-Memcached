@@ -104,13 +104,8 @@ sub _build_get_multi_cb {
                 } elsif ($line =~ /^VALUE (\S+) (\S+) (\S+)(?: (\S+))?/)  {
                     my ($rkey, $rflags, $rsize, $rcas) = ($1, $2, $3, $4);
                     $handle->push_read(chunk => $rsize, sub {
-                        my $data = $_[1];
-                        if ($rflags & AnyEvent::Memcached::Protocol::F_COMPRESS() && AnyEvent::Memcached::Protocol::HAVE_ZLIB()) {
-                            $data = Compress::Zlib::memGunzip($data);
-                        }
-                        if ($rflags & AnyEvent::Memcached::Protocol::F_STORABLE()) {
-                            $data = Storable::thaw($data);
-                        }
+                        my $data = $self->decode_value($rflags, $_[1]);
+
                         $rv{ $rkey } = $data; # XXX whatabout CAS?
                         $handle->push_read(regex => qr{\r\n}, cb => sub { "noop" });
                         $handle->push_read(line => $code);
