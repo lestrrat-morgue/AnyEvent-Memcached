@@ -111,6 +111,7 @@ sub _build_protocol {
 
 sub _build_queue { +[] }
 
+# Utilities that I usually get from Moose Native Traits
 sub add_handle { shift->handles->{ $_[0] } = $_[1] }
 sub all_servers { @{shift->servers} }
 sub get_handle { shift->handles->{ $_[0] } }
@@ -255,9 +256,32 @@ AnyEvent::Memcached - AnyEvent Memcached Client
     $memd->get_multi( @list_of_keys, $cb->(\%values) );
     $memd->stats( $name, $cb->(\%stats) );
 
+    # using the binary protocol
+    my $memd = AnyEvent::Memcached->new(
+        protocol_class => 'Binary',
+        servers => [ '127.0.0.1:11211' ],
+        compress_threshold => 10_000
+    );
+
+    # using your custom (OMG!) protocol
+    my $memd = AnyEvent::Memcached->new(
+        protocol => MyProtocol->new(),
+        servers => [ '127.0.0.1:11211' ],
+        compress_threshold => 10_000
+    );
+
+    # using a different hash algorithm
+    my $memd = AnyEvent::Memcached->new(
+        hashing_algorithm => MyHasher->new(),
+        servers => [ '127.0.0.1:11211' ],
+        compress_threshold => 1,
+    );
+
 =head1 DESCRIPTION
 
 This module implements a memcached client that resembles the Cache::Memcached
-API, except none of the methods return any meaningful value.
+API, except none of the methods return any meaningful value: you need to
+specify callbacks to handle them, which will be called via AnyEvent when
+the appropriate responses have arrived
 
 =cut
