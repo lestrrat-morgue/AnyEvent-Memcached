@@ -4,6 +4,12 @@ use namespace::clean -except => qw(meta);
 
 extends 'AnyEvent::Memcached::Protocol';
 
+use constant HAS_64BIT => do {
+    no strict;
+    require Config;
+    $Config{use64bitint};
+};
+
 #   General format of a packet:
 #
 #     Byte/     0       |       1       |       2       |       3       |
@@ -39,9 +45,12 @@ extends 'AnyEvent::Memcached::Protocol';
 #       +---------------+---------------+---------------+---------------+
 #      8| Total body length                                             |
 #       +---------------+---------------+---------------+---------------+
-#     12| Message ID                                                    |
+#     12| Opaque                                                        |
 #       +---------------+---------------+---------------+---------------+
-#     Total 16 bytes
+#     16| CAS                                                           |
+#       |                                                               |
+#       +---------------+---------------+---------------+---------------+
+#       Total 24 bytes
 #
 #   Response header:
 #
@@ -55,9 +64,12 @@ extends 'AnyEvent::Memcached::Protocol';
 #       +---------------+---------------+---------------+---------------+
 #      8| Total body length                                             |
 #       +---------------+---------------+---------------+---------------+
-#     12| Message ID                                                    |
+#     12| Opaque                                                        |
 #       +---------------+---------------+---------------+---------------+
-#     Total 16 bytes
+#     16| CAS                                                           |
+#       |                                                               |
+#       +---------------+---------------+---------------+---------------+
+#       Total 24 bytes
 #
 #   Header fields:
 #   Magic               Magic number.
@@ -70,10 +82,8 @@ extends 'AnyEvent::Memcached::Protocol';
 #                       soon).
 #   Reserved            Really reserved for future use (up for grabs).
 #   Total body length   Length in bytes of extra + key + value.
-#   Message ID          Will be copied back to you in the response.
-#                       FIXME: Can this be used to organize [UDP]
-#                       packets?
-
+#   Opaque              Will be copied back to you in the response.
+#   CAS                 Data version check.
 use constant +{
     REQ_MAGIC       => 0x80,
     RES_MAGIC       => 0x81,
@@ -107,42 +117,155 @@ use constant +{
     RAW_BYTES       => 0x00,
 };
 
+my $OPAQUE;
+BEGIN {
+    $OPAQUE = 0;
+}
+
+sub _encode_message {
+    my ($opcode, $key, $extras, $data_type, $reserved, $cas, $body) = @_;
+
+    my $key_length = defined $key ? bytes::length($key) : 0;
+    # first 4 bytes (long)
+    my $i1 = 0;
+    $i1 ^= REQ_MAGIC << 24;
+    $i1 ^= $opcode << 16;
+    $i1 ^= $key_length;
+
+    # second 4 bytes
+    my $extra_length = defined $extras ? bytes::length($extras) : 0;
+    my $i2 = 0;
+    $i2 ^= $extra_length << 24;
+    # $data_type and $reserved are not used currently
+
+    # third 4 bytes
+    my $body_length  = defined $body ? bytes::length($body) : 0;
+    my $i3 = $body_length + $key_length + $extra_length;
+
+    # this is the opaque value, which will be returned with the response
+    my $i4 = $OPAQUE + 1;
+    if ($OPAQUE == 0xffffffff) {
+        $OPAQUE = 0;
+    }
+
+    # CAS is 64 bit, which is troublesome on 32 bit architectures.
+    # we will NOT allow 64 bit CAS on 32 bit machines for now.
+    # better handling by binary-adept people are welcome
+    $cas ||= 0;
+    my ($i5, $i6);
+    if (HAS_64BIT) {
+        no warnings;
+        $i5 = 0xffffffff00000000 & $cas;
+        $i6 = 0x00000000ffffffff & $cas;
+    } else {
+        $i5 = 0x00000000;
+        $i6 = $cas;
+    }
+
+    my $message = pack( 'N6', $i1, $i2, $i3, $i4, $i5, $i6 );
+
+    if ($extra_length) {
+        $message .= $extras;
+    }
+    if ($key_length) {
+        $message .= pack('a*', $key);
+    }
+    if ($body_length) {
+        $message .= pack('a*', $body);
+    }
+
+    return $message;
+}
+
+use constant _noop => _encode_message(MEMD_NOOP, undef, undef, undef, undef, undef, undef);
+
+sub _decode_header {
+    my $header = shift;
+
+    my ($i1, $i2, $i3, $i4, $i5, $i6) = unpack('N6', $header);
+    my $magic = $i1 >> 24;
+    my $opcode = ($i1 & 0x00ff0000) >> 16;
+    my $status = $i1 & 0x0000ffff;
+    my $extra_length = ($i2 & 0xff000000) >> 16;
+    my $data_type = undef; # not used
+    my $reserved  = undef; # not used
+    my $total_body_length = $i3;
+    my $opaque = $i4;
+
+    my $cas;
+    if (HAS_64BIT) {
+        $cas = $i5 << 32;
+        $cas += $i6;
+    } else {
+        warn "overflow on CAS" if ($i5 || 0) != 0;
+        $cas = $i6;
+    }
+
+    return ($magic, $opcode, $status, $extra_length, $data_type, $reserved, $total_body_length, $opaque, $cas);
+}
+
 sub _build_get_multi_cb {
     my $self = shift;
 
     return sub {
-        my ($key, $cb) = @_;
+        my ($keys, $cb) = @_;
 
-        # XXX as of this commit, my puny attemp doesn't work.
-        # I'm too embarassed to show it here, so screw you.
-        my $data = $self->make_message( MEMD_GET, $key );
+        # organize the keys by handle
+        my %handle2keys;
+            
+        foreach my $key (@$keys) {
+            my $handle = $self->get_handle_for( $key );
+            my $list = $handle2keys{ $handle };
+            if (! $list) {
+                $handle2keys{$handle} = [ $handle, $key ];
+            } else {
+                push @$list, $key;
+            }
+        }
 
-        my $handle = $self->get_handle_for( $key );
+        foreach my $list (values %handle2keys) {
+            my ($handle, @keys) = @$list;
+            foreach my $data ( map { _encode_message(MEMD_GETK, $_) } @keys ) {
+                $handle->push_write($data);
+                $handle->push_read(chunk => 16, sub {
+                    my ($handle, $header) = @_;
 
-        $handle->push_write($data);
-        $handle->push_read(chunk => 16, sub {
-            my ($handle, $header) = @_;
+                    my ($magic, $opcode, $status, $extra_length, $data_type, $reserved, $total_body_length, $opaque, $cas) = _decode_header($header);
 
-            my ($first_long, $second_long) = unpack('N2', $header);
-            my $magic = $first_long >> 24;
-            my $opcode = ($first_long & 0x00ff0000) >> 16;
-            my $status = $first_long & 0x0000ffff;
+                    if ($magic != RES_MAGIC) {
+                        $cb->(undef, "Response magic is not of expected value");
+                        return;
+                    } 
 
-            if ($magic != RES_MAGIC) {
-                $cb->(undef, "Response magic is not of expected value");
-                return;
-            } 
-            $cb->( $magic );
-        });
+                    if ($status != 0) {
+warn "Error status: $status";
+                        $cb->(undef, "Error status");
+                        return;
+                    }
+
+                    if ($extra_length) {
+                        $handle->push_read(chunk => $extra_length, sub {
+                            warn "extra = $_[1]";
+                        });
+                    }
+
+                    if ($total_body_length) {
+                        $handle->push_read(chunk => $total_body_length, sub {
+                            warn "body = $_[1]";
+                        });
+                    }
+
+#                    $cb->( $magic );
+                });
+            }
+            $handle->push_write( _noop() );
+        }
     };
 }
 
 sub prepare_handle {
     my ($self, $fh) = @_;
     binmode($fh);
-}
-
-sub make_message {
 }
 
 __PACKAGE__->meta->make_immutable();
