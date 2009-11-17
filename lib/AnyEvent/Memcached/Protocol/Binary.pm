@@ -249,12 +249,11 @@ sub _status_str {
 
 {
     my $generator = sub {
-        my ($self, $cmd) = @_;
+        my $cmd = shift;
         sub {
-            my ($key, $value, $exptime, $noreply, $cb) = @_;
+            my ($self, $memcached, $key, $value, $exptime, $noreply, $cb) = @_;
 
             my $handle = $self->get_handle_for( $key );
-            my $memcached = $self->memcached;
 
             my ($write_data, $write_len, $flags, $expires) =
                 $self->prepare_value( $cmd, $value, $exptime );
@@ -274,27 +273,25 @@ sub _status_str {
 
                 if ($magic != RES_MAGIC) {
                     $cb->(undef, "Response magic is not of expected value");
-                    $self->memcached->drain_queue;
+                    $memcached->drain_queue;
                     return;
                 } 
 
                 $cb->($status);
-                $self->memcached->drain_queue;
+                $memcached->drain_queue;
             });
         }
     };
 
     sub _build_add_cb {
         my $self = shift;
-        return $generator->($self, "add");
+        return $generator->("add");
     }
 }
 
 sub _build_delete_cb {
-    my $self = shift;
-
     return sub {
-        my ($key, $noreply, $cb) = @_;
+        my ($self, $memcached, $key, $noreply, $cb) = @_;
 
         my $handle = $self->get_handle_for($key);
 
@@ -316,10 +313,8 @@ sub _build_delete_cb {
 }
 
 sub _build_get_multi_cb {
-    my $self = shift;
-
     return sub {
-        my ($keys, $cb, $cb_caller) = @_;
+        my ($self, $memcached, $keys, $cb, $cb_caller) = @_;
 
         # organize the keys by handle
         my %handle2keys;
@@ -338,7 +333,7 @@ sub _build_get_multi_cb {
         my $cv = AE::cv { 
             # This trigger should be called when ALL keys have responded
             $cb_caller->($cb, \%result);
-            $self->memcached->drain_queue;
+            $memcached->drain_queue;
         };
         foreach my $list (values %handle2keys) {
             my ($handle, @keys) = @$list;

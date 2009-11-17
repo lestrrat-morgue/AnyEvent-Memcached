@@ -6,11 +6,9 @@ extends 'AnyEvent::Memcached::Protocol';
 
 {
     my $generator = sub {
-        my ($self, $cmd) = @_;
-        my $memcached = $self->memcached;
-    
+        my $cmd = shift;
         return sub {
-            my ($key, $value, $cb) = @_;
+            my ($self, $memcached, $key, $value, $cb) = @_;
             my $handle = $self->get_handle_for( $key );
         
             $value ||= 1;
@@ -34,21 +32,18 @@ extends 'AnyEvent::Memcached::Protocol';
 
     sub _build_decr_cb {
         my $self = shift;
-        $generator->($self, "decr");
+        $generator->("decr");
     }
 
     sub _build_incr_cb {
         my $self = shift;
-        $generator->($self, "incr");
+        $generator->("incr");
     }
 }
 
 sub _build_delete_cb {
-    my $self = shift;
-    my $memcached = $self->memcached;
-
     return sub {
-        my ($key, $noreply, $cb) = @_;
+        my ($self, $memcached, $key, $noreply, $cb) = @_;
         my $handle = $self->get_handle_for( $key );
 
         my @command = (delete => $key);
@@ -70,11 +65,8 @@ sub _build_delete_cb {
 }
 
 sub _build_get_multi_cb {
-    my $self = shift;
-    my $memcached = $self->memcached;
-
     return sub {
-        my ($keys, $cb, $cb_caller) = @_;
+        my ($self, $memcached, $keys, $cb, $cb_caller) = @_;
         my %rv;
         my $cv = AE::cv {
             $cb_caller->($cb, \%rv);
@@ -134,9 +126,9 @@ sub _build_get_multi_cb {
 
 {
     my $generator = sub {
-        my ($self, $cmd) = @_;
+        my $cmd = shift;
         sub {
-            my ($key, $value, $exptime, $noreply, $cb) = @_;
+            my ($self, $memcached, $key, $value, $exptime, $noreply, $cb) = @_;
             my $handle = $self->get_handle_for( $key );
 
             my ($write_data, $write_len, $flags, $expires) =
@@ -151,30 +143,28 @@ sub _build_get_multi_cb {
 
     sub _build_add_cb {
         my $self = shift;
-        return $generator->( $self, "add" );
+        return $generator->( "add" );
     }
 
     sub _build_replace_cb {
         my $self = shift;
-        return $generator->( $self, "replace" );
+        return $generator->( "replace" );
     }
 
     sub _build_set_cb {
         my $self = shift;
-        return $generator->( $self, "set" );
+        return $generator->( "set" );
     }
 }
 
 sub _build_stats_cb {
-    my $self = shift;
     return sub {
-        my ($name, $cb) = @_;
+        my ($self, $memcached, $name, $cb) = @_;
 
         my %rv;
         my $cv = AE::cv {
             $cb->( \%rv );
         };
-        my $memcached = $self->memcached;
 
         foreach my $server ($memcached->all_servers) {
             my $handle = $memcached->get_handle( $server );

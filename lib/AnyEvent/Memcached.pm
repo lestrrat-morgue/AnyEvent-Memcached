@@ -123,13 +123,13 @@ sub next_queue { shift @{shift->queue} }
 sub add {
     my $cb = pop @_ if ref $_[-1] eq 'CODE';
     my ($self, $key, $value, $exptime, $noreply) = @_;
-    $self->add_to_queue( $self->protocol->add_cb, [ $key, $value, $exptime, $noreply, $cb ] );
+    $self->add_to_queue( $self->protocol->add_cb, [ $self->protocol, $self, $key, $value, $exptime, $noreply, $cb ] );
 }
 
 sub decr {
     my $cb = pop @_ if ref $_[-1] eq 'CODE';
     my ($self, $key, $value) = @_;
-    $self->add_to_queue( $self->protocol->decr_cb, [ $key, $value, $cb ] );
+    $self->add_to_queue( $self->protocol->decr_cb, [ $self->protocol, $self, $key, $value, $cb ] );
 }
 
 *remove = \&delete;
@@ -137,43 +137,43 @@ sub delete {
     my $cb = pop @_ if ref $_[-1] eq 'CODE';
     my ($self, $key) = @_;
     my $noreply = defined $cb ? 0 : 1;
-    $self->add_to_queue( $self->protocol->delete_cb, [ $key, $noreply, $cb ] );
+    $self->add_to_queue( $self->protocol->delete_cb, [ $self->protocol, $self, $key, $noreply, $cb ] );
 }
 
 sub get {
     my $cb = pop @_ if ref $_[-1] eq 'CODE';
     my ($self, @keys) = @_;
-    $self->add_to_queue( $self->protocol->get_multi_cb, [ \@keys, $cb, sub { $_[0]->(values %{$_[1]}) } ] );
+    $self->add_to_queue( $self->protocol->get_multi_cb, [ $self->protocol, $self, \@keys, $cb, sub { $_[0]->(values %{$_[1]}) } ] );
 }
 
 sub get_multi {
     my $cb = pop @_ if ref $_[-1] eq 'CODE';
     my ($self, @keys) = @_;
-    $self->add_to_queue( $self->protocol->get_multi_cb, [ \@keys, $cb, sub { $_[0]->($_[1]) } ] );
+    $self->add_to_queue( $self->protocol->get_multi_cb, [ $self->protocol, $self, \@keys, $cb, sub { $_[0]->($_[1]) } ] );
 }
 
 sub incr {
     my $cb = pop @_ if ref $_[-1] eq 'CODE';
     my ($self, $key, $value) = @_;
-    $self->add_to_queue( $self->protocol->incr_cb, [ $key, $value, $cb ] );
+    $self->add_to_queue( $self->protocol->incr_cb, [ $self->protocol, $self, $key, $value, $cb ] );
 }
 
 sub replace {
     my $cb = pop @_ if ref $_[-1] eq 'CODE';
     my ($self, $key, $value, $exptime, $noreply) = @_;
-    $self->add_to_queue( $self->protocol->replace_cb, [ $key, $value, $exptime, $noreply, $cb ] );
+    $self->add_to_queue( $self->protocol->replace_cb, [ $self->protocol, $self, $key, $value, $exptime, $noreply, $cb ] );
 }
 
 sub set {
     my $cb = pop @_ if ref $_[-1] eq 'CODE';
     my ($self, $key, $value, $exptime, $noreply) = @_;
-    $self->add_to_queue( $self->protocol->set_cb, [ $key, $value, $exptime, $noreply, $cb ] );
+    $self->add_to_queue( $self->protocol->set_cb, [ $self->protocol, $self, $key, $value, $exptime, $noreply, $cb ] );
 }
 
 sub stats {
     my $cb = pop @_ if ref $_[-1] eq 'CODE';
     my ($self, $name) = @_;
-    $self->add_to_queue( $self->protocol->stats_cb, [ $name, $cb ] );
+    $self->add_to_queue( $self->protocol->stats_cb, [ $self->protocol, $self, $name, $cb ] );
 }
 
 sub add_to_queue {
