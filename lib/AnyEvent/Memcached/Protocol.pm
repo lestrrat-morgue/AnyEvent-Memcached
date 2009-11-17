@@ -101,6 +101,41 @@ sub get_handle_for {
     return $handle;
 }
 
+sub prepare_value {
+    my ($self, $cmd, $value, $exptime) = @_;
+
+    my $memcached = $self->memcached;
+
+    my $flags = 0;
+    if (ref $value) {
+        $value = Storable::nfreeze($value);
+        $flags |= F_STORABLE();
+    }
+
+    my $len = bytes::length($value);
+    my $threshold = $memcached->compress_threshold;
+    my $compressable = 
+        ($cmd ne 'append' && $cmd ne 'prepend') &&
+        $threshold && 
+        HAVE_ZLIB() &&
+        $memcached->compress_enabled &&
+        $len >= $threshold
+    ;
+    if ($compressable) {
+        my $c_val = Compress::Zlib::memGzip($value);
+        my $c_len = length($c_val);
+
+        if ($c_len < $len * ( 1 - COMPRESS_SAVINGS() ) ) {
+            $value = $c_val;
+            $len = $c_len;
+            $flags |= F_COMPRESS();
+        }
+    }
+    $exptime = int($exptime || 0);
+
+    return ($value, $len, $flags, $exptime);
+}
+
 __PACKAGE__->meta->make_immutable();
 
 1;

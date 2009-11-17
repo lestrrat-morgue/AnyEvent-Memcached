@@ -135,41 +135,16 @@ sub _build_get_multi_cb {
 {
     my $generator = sub {
         my ($self, $cmd) = @_;
-        my $memcached = $self->memcached;
         sub {
             my ($key, $value, $exptime, $noreply, $cb) = @_;
             my $handle = $self->get_handle_for( $key );
 
-            my $flags = 0;
-            if (ref $value) {
-                $value = Storable::nfreeze($value);
-                $flags |= AnyEvent::Memcached::Protocol::F_STORABLE();
-            }
-
-            my $len = bytes::length($value);
-            my $threshold = $memcached->compress_threshold;
-            my $compressable = 
-                ($cmd ne 'append' && $cmd ne 'prepend') &&
-                $threshold && 
-                AnyEvent::Memcached::Protocol::HAVE_ZLIB() &&
-                $memcached->compress_enabled &&
-                $len >= $threshold
-            ;
-            if ($compressable) {
-                my $c_val = Compress::Zlib::memGzip($value);
-                my $c_len = length($c_val);
-
-                if ($c_len < $len * ( 1 - AnyEvent::Memcached::Protocol::COMPRESS_SAVINGS() ) ) {
-                    $value = $c_val;
-                    $len = $c_len;
-                    $flags |= AnyEvent::Memcached::Protocol::F_COMPRESS();
-                }
-            }
-            $exptime = int($exptime || 0);
-            $handle->push_write("$cmd $key $flags $exptime $len\r\n$value\r\n");
+            my ($write_data, $write_len, $flags, $expires) =
+                $self->prepare_value( $cmd, $value, $exptime );
+            $handle->push_write("$cmd $key $flags $expires $write_len\r\n$write_data\r\n");
             $handle->push_read(regex => qr{^STORED\r\n}, sub {
                 $cb->(1) if $cb;
-                $memcached->drain_queue;
+                $self->memcached->drain_queue;
             });
         };
     };
