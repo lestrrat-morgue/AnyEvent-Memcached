@@ -113,6 +113,7 @@ sub _build_queue { +[] }
 
 # Utilities that I usually get from Moose Native Traits
 sub add_handle { shift->handles->{ $_[0] } = $_[1] }
+sub all_handles { @{shift->handles} }
 sub all_servers { @{shift->servers} }
 sub get_handle { shift->handles->{ $_[0] } }
 sub get_server { shift->servers->[$_[0]] }
@@ -233,6 +234,19 @@ sub drain_queue {
         my ($cb, $args) = @$next;
         $cb->(@$args);
     }
+}
+
+sub destroy {
+    my $self = shift;
+    foreach my $handle ( $self->all_handles ) {
+        $handle->destroy;
+    }
+    $self->clear_handles();
+}
+
+sub DEMOLISH {
+    my $self = shift;
+    $self->destroy;
 }
 
 1;
